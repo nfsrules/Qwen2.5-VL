@@ -8,7 +8,6 @@ import pathlib
 import torch
 import transformers
 import json
-from typing import Dict
 import shutil
 import sys
 from pathlib import Path
@@ -22,6 +21,7 @@ from transformers import (
     Trainer,
     BitsAndBytesConfig
 )
+from peft import get_peft_model, LoraConfig, TaskType
 
 from qwenvl.train.trainer import replace_qwen2_vl_attention_class
 from qwenvl.data.data_qwen import make_supervised_data_module
@@ -49,32 +49,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
     if trainer.args.should_save:
         cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
         del state_dict
-        trainer._save(output_dir, state_dict=cpu_state_dict)  # noqa
-
-
-def set_model(model_args, model):
-    if model_args.tune_mm_vision:
-        for n, p in model.visual.named_parameters():
-            p.requires_grad = True
-    else:
-        for n, p in model.visual.named_parameters():
-            p.requires_grad = False
-
-    if model_args.tune_mm_mlp:
-        for n, p in model.visual.merger.named_parameters():
-            p.requires_grad = True
-    else:
-        for n, p in model.visual.merger.named_parameters():
-            p.requires_grad = False
-
-    if model_args.tune_mm_llm:
-        for n, p in model.model.named_parameters():
-            p.requires_grad = True
-        model.lm_head.requires_grad = True
-    else:
-        for n, p in model.model.named_parameters():
-            p.requires_grad = False
-        model.lm_head.requires_grad = False
+        trainer._save(output_dir, state_dict=cpu_state_dict)
 
 
 def train(attn_implementation="flash_attention_2"):
@@ -94,7 +69,7 @@ def train(attn_implementation="flash_attention_2"):
         bnb_4bit_quant_type="nf4",
     )
 
-    # Load model in 4-bit with device_map="auto"
+    # Load model in 4-bit
     if "qwen2.5" in model_args.model_name_or_path.lower():
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
@@ -125,6 +100,18 @@ def train(attn_implementation="flash_attention_2"):
 
     model.config.use_cache = False
 
+    # Enable LoRA
+    peft_config = LoraConfig(
+        r=64,
+        lora_alpha=16,
+        target_modules=["q_proj", "v_proj"],  # You can adjust this list based on architecture
+        lora_dropout=0.05,
+        bias="none",
+        task_type=TaskType.CAUSAL_LM,
+    )
+
+    model = get_peft_model(model, peft_config)
+
     if training_args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
             model.enable_input_require_grads()
@@ -141,15 +128,12 @@ def train(attn_implementation="flash_attention_2"):
         use_fast=False,
     )
 
-    set_model(model_args, model)
-
-    if torch.distributed.get_rank() == 0:
-        model.visual.print_trainable_parameters()
-        model.model.print_trainable_parameters()
-
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
     trainer = Trainer(
-        model=model, processing_class=tokenizer, args=training_args, **data_module
+        model=model,
+        args=training_args,
+        tokenizer=tokenizer,
+        **data_module
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
