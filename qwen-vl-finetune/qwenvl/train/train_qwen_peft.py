@@ -160,68 +160,21 @@ def train(attn_implementation="flash_attention_2"):
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    # Dynamically add use_lora if not present
-    if not hasattr(model_args, "use_lora"):
-        model_args.use_lora = False
-        if any("--use_lora" in arg for arg in sys.argv):
-            model_args.use_lora = True
-
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
 
-    # Debug: Print arguments
-    rank0_print(f"Model args: {model_args}")
-    rank0_print(f"Data args: {data_args}")
-    rank0_print(f"Training args: {training_args}")
-
-    # Ensure bfloat16 for Flash Attention 2.0
+    # Load model with bf16
     torch_dtype = torch.bfloat16
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=training_args.cache_dir,
+        attn_implementation=attn_implementation,
+        torch_dtype=torch_dtype,
+    )
+    model = model.to("cuda")  # Move to GPU as per warning
+    print(f"Memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
-    if "qwen2.5" in model_args.model_name_or_path.lower():
-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            torch_dtype=torch_dtype,
-        )
-        data_args.image_processor = AutoProcessor.from_pretrained(
-            model_args.model_name_or_path,
-            use_fast=True,
-        ).image_processor
-        data_args.model_type = "qwen2.5vl"
-    else:
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_args.model_name_or_path,
-            cache_dir=training_args.cache_dir,
-            attn_implementation=attn_implementation,
-            torch_dtype=torch_dtype,
-        )
-        data_args.image_processor = Qwen2VLImageProcessor.from_pretrained(
-            model_args.model_name_or_path,
-            use_fast=True,
-        )
-        data_args.model_type = "qwen2vl"
-
-    # Move model to GPU
-    model = model.to("cuda")
-    rank0_print(f"Memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
-    # Apply LoRA if enabled
-    if model_args.use_lora:
-        model = apply_lora(model, model_args)
-
-    if data_args.data_flatten:
-        replace_qwen2_vl_attention_class()
-    model.config.use_cache = False
-
-    if training_args.gradient_checkpointing:
-        if hasattr(model, "enable_input_require_grads"):
-            model.enable_input_require_grads()
-        else:
-            def make_inputs_require_grad(module, input, output):
-                output.requires_grad_(True)
-            model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
-
+    # Load tokenizer
     tokenizer = transformers.AutoTokenizer.from_pretrained(
         model_args.model_name_or_path,
         cache_dir=training_args.cache_dir,
@@ -229,20 +182,18 @@ def train(attn_implementation="flash_attention_2"):
         padding_side="right",
         use_fast=False,
     )
-    set_model(model_args, model)
 
-    if torch.distributed.get_rank() == 0:
-        model.visual.print_trainable_parameters()
-        model.model.print_trainable_parameters()
-
+    # Set training parameters
+    set_model(model_args, model)  # Your existing function
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
-    
-    # Configure Trainer for bf16 without FP16 scaling
+
+    # Enforce bf16 and disable fp16
     training_args.fp16 = False
     training_args.bf16 = True
     training_args.ddp_find_unused_parameters = False
-    rank0_print(f"Final training args: {training_args}")
+    print(f"Final training args: {training_args}")
 
+    # Initialize CustomTrainer
     trainer = CustomTrainer(
         model=model,
         processing_class=tokenizer,
@@ -250,26 +201,6 @@ def train(attn_implementation="flash_attention_2"):
         **data_module
     )
 
-    rank0_print(f"Memory after trainer init: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
-
-    # Let Trainer handle mixed precision
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        logging.info("Checkpoint found, resuming training")
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
-
-    trainer.save_state()
-    data_args.image_processor.save_pretrained(training_args.output_dir)
-
-    source_path = os.path.join(model_args.model_name_or_path, "chat_template.json")
-    template_path = os.path.join(training_args.output_dir, "chat_template.json")
-    shutil.copy2(source_path, template_path)
-
-    model.config.use_cache = True
-
+    # Start training
+    trainer.train()
     safe_save_model_for_hf_trainer(trainer=trainer, output_dir=training_args.output_dir)
-
-
-if __name__ == "__main__":
-    train(attn_implementation="flash_attention_2")
