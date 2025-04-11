@@ -73,7 +73,10 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
 
 def set_model(model_args, model):
-    if model_args.use_lora:
+    # Check if use_lora is defined, default to False if not
+    use_lora = getattr(model_args, "use_lora", False)
+    
+    if use_lora:
         # When using LoRA, disable full fine-tuning
         for n, p in model.named_parameters():
             p.requires_grad = False
@@ -134,18 +137,28 @@ def train(attn_implementation="flash_attention_2"):
     )
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
+    # Dynamically add use_lora if not present
+    if not hasattr(model_args, "use_lora"):
+        model_args.use_lora = False
+        if any("--use_lora" in arg for arg in sys.argv):
+            model_args.use_lora = True
+
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
+
+    # Ensure bfloat16 for Flash Attention 2.0
+    torch_dtype = torch.bfloat16 if training_args.bf16 else torch.float16
 
     if "qwen2.5" in model_args.model_name_or_path.lower():
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            torch_dtype=torch_dtype,
         )
         data_args.image_processor = AutoProcessor.from_pretrained(
             model_args.model_name_or_path,
+            use_fast=True,  # Enable fast processor as warned
         ).image_processor
         data_args.model_type = "qwen2.5vl"
     else:
@@ -153,15 +166,20 @@ def train(attn_implementation="flash_attention_2"):
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            torch_dtype=torch_dtype,
         )
         data_args.image_processor = Qwen2VLImageProcessor.from_pretrained(
             model_args.model_name_or_path,
+            use_fast=True,
         )
         data_args.model_type = "qwen2vl"
 
+    # Move model to GPU
+    model = model.to("cuda")
+    rank0_print(f"Memory after model load: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
     # Apply LoRA if enabled
-    if hasattr(model_args, "use_lora") and model_args.use_lora:
+    if model_args.use_lora:
         model = apply_lora(model, model_args)
 
     if data_args.data_flatten:
@@ -190,15 +208,25 @@ def train(attn_implementation="flash_attention_2"):
         model.model.print_trainable_parameters()
 
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+    
+    # Initialize trainer with autocast for mixed precision
     trainer = Trainer(
-        model=model, processing_class=tokenizer, args=training_args, **data_module
+        model=model,
+        processing_class=tokenizer,
+        args=training_args,
+        **data_module
     )
 
-    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        logging.info("checkpoint found, resume training")
-        trainer.train(resume_from_checkpoint=True)
-    else:
-        trainer.train()
+    rank0_print(f"Memory after trainer init: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
+
+    # Wrap training in autocast
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if training_args.bf16 else torch.float16):
+        if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+            logging.info("checkpoint found, resume training")
+            trainer.train(resume_from_checkpoint=True)
+        else:
+            trainer.train()
+
     trainer.save_state()
     data_args.image_processor.save_pretrained(training_args.output_dir)
 
