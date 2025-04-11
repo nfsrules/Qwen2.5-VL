@@ -158,7 +158,7 @@ def train(attn_implementation="flash_attention_2"):
         )
         data_args.image_processor = AutoProcessor.from_pretrained(
             model_args.model_name_or_path,
-            use_fast=True,  # Enable fast processor as warned
+            use_fast=True,
         ).image_processor
         data_args.model_type = "qwen2.5vl"
     else:
@@ -209,7 +209,9 @@ def train(attn_implementation="flash_attention_2"):
 
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
     
-    # Initialize trainer with autocast for mixed precision
+    # Initialize trainer with bfloat16 and no gradient scaling for bf16
+    training_args.mixed_precision = "bf16" if training_args.bf16 else "fp16"
+    training_args.find_unused_parameters = False  # Optimize DDP performance
     trainer = Trainer(
         model=model,
         processing_class=tokenizer,
@@ -219,13 +221,22 @@ def train(attn_implementation="flash_attention_2"):
 
     rank0_print(f"Memory after trainer init: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
-    # Wrap training in autocast
-    with torch.autocast(device_type="cuda", dtype=torch.bfloat16 if training_args.bf16 else torch.float16):
+    # For bf16, skip GradScaler; for fp16, use it
+    if training_args.bf16:
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+                logging.info("checkpoint found, resume training")
+                trainer.train(resume_from_checkpoint=True)
+            else:
+                trainer.train()
+    else:
+        scaler = torch.cuda.amp.GradScaler()
         if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
             logging.info("checkpoint found, resume training")
             trainer.train(resume_from_checkpoint=True)
         else:
-            trainer.train()
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                trainer.train()
 
     trainer.save_state()
     data_args.image_processor.save_pretrained(training_args.output_dir)
