@@ -119,7 +119,7 @@ def train(attn_implementation="flash_attention_2"):
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+            torch_dtype=torch.bfloat16#(torch.bfloat16 if training_args.bf16 else None),
         )
         data_args.image_processor = Qwen2VLImageProcessor.from_pretrained(
             model_args.model_name_or_path,
