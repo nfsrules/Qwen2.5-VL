@@ -209,9 +209,11 @@ def train(attn_implementation="flash_attention_2"):
 
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
     
-    # Initialize trainer with bfloat16 and no gradient scaling for bf16
-    training_args.mixed_precision = "bf16" if training_args.bf16 else "fp16"
-    training_args.find_unused_parameters = False  # Optimize DDP performance
+    # Configure Trainer for bf16 without FP16 scaling
+    training_args.fp16 = False
+    training_args.bf16 = training_args.bf16  # Ensure bf16 is set
+    training_args.find_unused_parameters = False  # Optimize DDP
+    training_args.no_cuda_amp = training_args.bf16  # Disable FP16 AMP for bf16
     trainer = Trainer(
         model=model,
         processing_class=tokenizer,
@@ -221,22 +223,12 @@ def train(attn_implementation="flash_attention_2"):
 
     rank0_print(f"Memory after trainer init: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
 
-    # For bf16, skip GradScaler; for fp16, use it
-    if training_args.bf16:
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
-            if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-                logging.info("checkpoint found, resume training")
-                trainer.train(resume_from_checkpoint=True)
-            else:
-                trainer.train()
+    # Let Trainer handle mixed precision
+    if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
+        logging.info("checkpoint found, resume training")
+        trainer.train(resume_from_checkpoint=True)
     else:
-        scaler = torch.cuda.amp.GradScaler()
-        if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-            logging.info("checkpoint found, resume training")
-            trainer.train(resume_from_checkpoint=True)
-        else:
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
-                trainer.train()
+        trainer.train()
 
     trainer.save_state()
     data_args.image_processor.save_pretrained(training_args.output_dir)
