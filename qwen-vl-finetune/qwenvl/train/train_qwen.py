@@ -110,7 +110,7 @@ def train(attn_implementation="flash_attention_2"):
             attn_implementation=attn_implementation,
             torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
         )
-        model = model.to("cuda")
+        #model = model.to("cuda")
         data_args.image_processor = AutoProcessor.from_pretrained(
             model_args.model_name_or_path,
         ).image_processor
@@ -126,7 +126,7 @@ def train(attn_implementation="flash_attention_2"):
             model_args.model_name_or_path,
         )
         data_args.model_type = "qwen2vl"
-        model = model.to("cuda")
+        #model = model.to("cuda")
 
     if data_args.data_flatten:
         replace_qwen2_vl_attention_class()
