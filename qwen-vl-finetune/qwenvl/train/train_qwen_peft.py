@@ -140,11 +140,6 @@ class CustomTrainer(Trainer):
             device_placement=True,
             step_scheduler_with_optimizer=False,
         )
-        # Ensure DDP does not use find_unused_parameters
-        if self.args.ddp_find_unused_parameters is not None:
-            self.accelerator.ddp_handler = torch.distributed.DistributedDataParallel(
-                find_unused_parameters=self.args.ddp_find_unused_parameters
-            )
         return self.accelerator
 
     def clip_grad_norm_(self, max_grad_norm):
