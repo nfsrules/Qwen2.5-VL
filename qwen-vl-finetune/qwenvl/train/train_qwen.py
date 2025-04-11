@@ -15,6 +15,10 @@
 #    limitations under the License.
 
 import os
+os.environ["WANDB_MODE"] = "offline"
+os.environ["WANDB_PROJECT"] = "your_project"
+os.environ["WANDB_RUN_NAME"] = "my_qwen_run"
+
 import logging
 import pathlib
 import torch
