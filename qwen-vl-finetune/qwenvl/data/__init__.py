@@ -1,4 +1,6 @@
 import re
+from pathlib import Path
+
 
 # Define placeholders for dataset paths
 CAMBRIAN_737K = {
@@ -28,6 +30,17 @@ data_dict = {
     "videochatgpt": VIDEOCHATGPT,
 }
 
+SYNTHETIC_ROOT = Path(__file__).parent / "synthetic_datasets"
+for folder in SYNTHETIC_ROOT.iterdir():
+    if folder.is_dir():
+        name = folder.name
+        meta_file = folder / "metadata.json"
+        video_dir = folder / "videos"
+        if meta_file.exists() and video_dir.exists():
+            data_dict[name] = {
+                "annotation_path": str(meta_file.resolve()),
+                "data_path": str(video_dir.resolve())
+            }
 
 def parse_sampling_rate(dataset_name):
     match = re.search(r"%(\d+)$", dataset_name)
