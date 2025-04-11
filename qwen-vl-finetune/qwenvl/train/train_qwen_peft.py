@@ -23,6 +23,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
+from accelerate import Accelerator
 
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
@@ -33,6 +34,7 @@ from trainer import replace_qwen2_vl_attention_class
 from transformers import (
     Qwen2VLForConditionalGeneration,
     Qwen2_5_VLForConditionalGeneration,
+    Trainer,
 )
 from qwenvl.data.data_qwen import make_supervised_data_module
 
@@ -41,7 +43,7 @@ from qwenvl.train.argument import (
     DataArguments,
     TrainingArguments,
 )
-from transformers import AutoTokenizer, AutoProcessor, Qwen2VLImageProcessor, Trainer
+from transformers import AutoTokenizer, AutoProcessor, Qwen2VLImageProcessor
 from peft import LoraConfig, get_peft_model, PeftModel
 
 local_rank = None
@@ -126,6 +128,30 @@ def apply_lora(model, model_args):
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()  # Log trainable parameters
     return model
+
+
+class CustomTrainer(Trainer):
+    """Custom Trainer to disable GradScaler for bf16."""
+    def create_accelerator_and_postprocess(self):
+        # Initialize Accelerator with no GradScaler for bf16
+        self.accelerator = Accelerator(
+            mixed_precision="bf16" if self.args.bf16 else "no",
+            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+            device_placement=True,
+            step_scheduler_with_optimizer=False,
+        )
+        # Ensure DDP does not use find_unused_parameters
+        if self.args.ddp_find_unused_parameters is not None:
+            self.accelerator.ddp_handler = torch.distributed.DistributedDataParallel(
+                find_unused_parameters=self.args.ddp_find_unused_parameters
+            )
+        return self.accelerator
+
+    def clip_grad_norm_(self, max_grad_norm):
+        # Skip gradient scaling for bf16
+        if self.args.bf16:
+            return torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
+        return super().clip_grad_norm_(max_grad_norm)
 
 
 def train(attn_implementation="flash_attention_2"):
@@ -216,10 +242,10 @@ def train(attn_implementation="flash_attention_2"):
     # Configure Trainer for bf16 without FP16 scaling
     training_args.fp16 = False
     training_args.bf16 = True
-    training_args.find_unused_parameters = False
+    training_args.ddp_find_unused_parameters = False
     rank0_print(f"Final training args: {training_args}")
 
-    trainer = Trainer(
+    trainer = CustomTrainer(
         model=model,
         processing_class=tokenizer,
         args=training_args,
