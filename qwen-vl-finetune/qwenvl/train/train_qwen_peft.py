@@ -7,7 +7,6 @@ import logging
 import pathlib
 import torch
 import transformers
-import json
 import shutil
 import sys
 from pathlib import Path
@@ -23,12 +22,13 @@ from transformers import (
 )
 from peft import get_peft_model, LoraConfig, TaskType
 
-from qwenvl.train.trainer import replace_qwen2_vl_attention_class
-from qwenvl.data.data_qwen import make_supervised_data_module
-from qwenvl.train.argument import ModelArguments, DataArguments, TrainingArguments
-
+# Add your project root
 project_root = Path(__file__).parent.parent.parent
 sys.path.append(str(project_root))
+
+from qwenvl.data.data_qwen import make_supervised_data_module
+from qwenvl.train.argument import ModelArguments, DataArguments, TrainingArguments
+from qwenvl.train.trainer import replace_qwen2_vl_attention_class
 
 local_rank = None
 
@@ -39,7 +39,6 @@ def rank0_print(*args):
 
 
 def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: str):
-    """Collects the state dict and dump to disk."""
     if trainer.deepspeed:
         torch.cuda.synchronize()
         trainer.save_model(output_dir)
@@ -47,7 +46,7 @@ def safe_save_model_for_hf_trainer(trainer: transformers.Trainer, output_dir: st
 
     state_dict = trainer.model.state_dict()
     if trainer.args.should_save:
-        cpu_state_dict = {key: value.cpu() for key, value in state_dict.items()}
+        cpu_state_dict = {k: v.cpu() for k, v in state_dict.items()}
         del state_dict
         trainer._save(output_dir, state_dict=cpu_state_dict)
 
@@ -61,22 +60,22 @@ def train(attn_implementation="flash_attention_2"):
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
 
-    # 4-bit quantization config
+    # === 4-bit Quantization Config ===
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
         bnb_4bit_compute_dtype=torch.float16,
-        bnb_4bit_quant_type="nf4",
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4"
     )
 
-    # Load model in 4-bit
+    # === Load Base Model ===
     if "qwen2.5" in model_args.model_name_or_path.lower():
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            device_map="auto",
             quantization_config=bnb_config,
+            device_map="auto",
         )
         data_args.image_processor = AutoProcessor.from_pretrained(
             model_args.model_name_or_path
@@ -87,11 +86,11 @@ def train(attn_implementation="flash_attention_2"):
             model_args.model_name_or_path,
             cache_dir=training_args.cache_dir,
             attn_implementation=attn_implementation,
-            device_map="auto",
             quantization_config=bnb_config,
+            device_map="auto",
         )
         data_args.image_processor = Qwen2VLImageProcessor.from_pretrained(
-            model_args.model_name_or_path,
+            model_args.model_name_or_path
         )
         data_args.model_type = "qwen2vl"
 
@@ -100,17 +99,16 @@ def train(attn_implementation="flash_attention_2"):
 
     model.config.use_cache = False
 
-    # Enable LoRA
-    peft_config = LoraConfig(
+    # === LoRA Config ===
+    lora_config = LoraConfig(
         r=64,
         lora_alpha=16,
-        target_modules=["q_proj", "v_proj"],  # You can adjust this list based on architecture
-        lora_dropout=0.05,
+        lora_dropout=0.1,
+        target_modules=["q_proj", "v_proj"],
         bias="none",
         task_type=TaskType.CAUSAL_LM,
     )
-
-    model = get_peft_model(model, peft_config)
+    model = get_peft_model(model, lora_config)
 
     if training_args.gradient_checkpointing:
         if hasattr(model, "enable_input_require_grads"):
@@ -128,6 +126,9 @@ def train(attn_implementation="flash_attention_2"):
         use_fast=False,
     )
 
+    if torch.distributed.get_rank() == 0:
+        model.print_trainable_parameters()
+
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
     trainer = Trainer(
         model=model,
@@ -137,7 +138,7 @@ def train(attn_implementation="flash_attention_2"):
     )
 
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        logging.info("checkpoint found, resume training")
+        logging.info("Checkpoint found, resuming training.")
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
@@ -155,4 +156,4 @@ def train(attn_implementation="flash_attention_2"):
 
 if __name__ == "__main__":
     train(attn_implementation="flash_attention_2")
-    # Or fallback: train(attn_implementation="eager")
+    # train(attn_implementation="eager")
