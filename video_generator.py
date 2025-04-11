@@ -8,7 +8,8 @@ from pathlib import Path
 
 class SyntheticDatasetLoader:
     def __init__(self, output_dir="dataset", screen_size=(224, 224), video_length=60):
-        self.output_dir = Path(output_dir)
+        base_path = Path(__file__).parent.resolve()
+        self.output_dir = (base_path / output_dir).resolve()
         self.video_dir = self.output_dir / "videos"
         self.meta_file = self.output_dir / "metadata.json"
         self.screen_width, self.screen_height = screen_size
@@ -24,6 +25,8 @@ class SyntheticDatasetLoader:
         # Create directories
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.video_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"📂 Dataset will be saved to: {self.output_dir}")
 
     def generate_dataset(self, num_samples=10):
         metadata = []
