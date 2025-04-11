@@ -131,11 +131,16 @@ def apply_lora(model, model_args):
 
 
 class CustomTrainer(Trainer):
-    """Custom Trainer to disable GradScaler for bf16."""
+    """Custom Trainer to disable GradScaler for bf16 and support DeepSpeed checks."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Initialize attributes expected by Trainer
+        self.is_deepspeed_enabled = getattr(self.args, "deepspeed", None) is not None and self.args.deepspeed != ""
+
     def create_accelerator_and_postprocess(self):
-        # Initialize Accelerator with no GradScaler for bf16
+        # Initialize Accelerator with bf16
         self.accelerator = Accelerator(
-            mixed_precision="bf16" if self.args.bf16 else "no",
+            mixed_precision="bf16",
             gradient_accumulation_steps=self.args.gradient_accumulation_steps,
             device_placement=True,
             step_scheduler_with_optimizer=False,
@@ -144,9 +149,7 @@ class CustomTrainer(Trainer):
 
     def clip_grad_norm_(self, max_grad_norm):
         # Skip gradient scaling for bf16
-        if self.args.bf16:
-            return torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
-        return super().clip_grad_norm_(max_grad_norm)
+        return torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_grad_norm)
 
 
 def train(attn_implementation="flash_attention_2"):
