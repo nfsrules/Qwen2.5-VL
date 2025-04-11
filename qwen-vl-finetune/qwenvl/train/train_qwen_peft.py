@@ -20,7 +20,6 @@ import pathlib
 import torch
 import transformers
 import json
-from typing import Dict
 import shutil
 import sys
 from pathlib import Path
@@ -146,8 +145,13 @@ def train(attn_implementation="flash_attention_2"):
     local_rank = training_args.local_rank
     os.makedirs(training_args.output_dir, exist_ok=True)
 
+    # Debug: Print arguments
+    rank0_print(f"Model args: {model_args}")
+    rank0_print(f"Data args: {data_args}")
+    rank0_print(f"Training args: {training_args}")
+
     # Ensure bfloat16 for Flash Attention 2.0
-    torch_dtype = torch.bfloat16 if training_args.bf16 else torch.float16
+    torch_dtype = torch.bfloat16
 
     if "qwen2.5" in model_args.model_name_or_path.lower():
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
@@ -211,9 +215,10 @@ def train(attn_implementation="flash_attention_2"):
     
     # Configure Trainer for bf16 without FP16 scaling
     training_args.fp16 = False
-    training_args.bf16 = training_args.bf16  # Ensure bf16 is set
-    training_args.find_unused_parameters = False  # Optimize DDP
-    training_args.no_cuda_amp = training_args.bf16  # Disable FP16 AMP for bf16
+    training_args.bf16 = True
+    training_args.find_unused_parameters = False
+    rank0_print(f"Final training args: {training_args}")
+
     trainer = Trainer(
         model=model,
         processing_class=tokenizer,
@@ -225,7 +230,7 @@ def train(attn_implementation="flash_attention_2"):
 
     # Let Trainer handle mixed precision
     if list(pathlib.Path(training_args.output_dir).glob("checkpoint-*")):
-        logging.info("checkpoint found, resume training")
+        logging.info("Checkpoint found, resuming training")
         trainer.train(resume_from_checkpoint=True)
     else:
         trainer.train()
