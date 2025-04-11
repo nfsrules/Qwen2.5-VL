@@ -20,7 +20,7 @@ from transformers import (
     Trainer,
     BitsAndBytesConfig
 )
-from peft import get_peft_model, LoraConfig, TaskType
+from peft import get_peft_model, LoraConfig, TaskType, prepare_model_for_kbit_training
 
 # Add your project root
 project_root = Path(__file__).parent.parent.parent
@@ -99,6 +99,9 @@ def train(attn_implementation="flash_attention_2"):
 
     model.config.use_cache = False
 
+    # === Prepare Model for PEFT ===
+    model = prepare_model_for_kbit_training(model)
+
     # === LoRA Config ===
     lora_config = LoraConfig(
         r=64,
@@ -130,6 +133,7 @@ def train(attn_implementation="flash_attention_2"):
         model.print_trainable_parameters()
 
     data_module = make_supervised_data_module(tokenizer=tokenizer, data_args=data_args)
+
     trainer = Trainer(
         model=model,
         args=training_args,
