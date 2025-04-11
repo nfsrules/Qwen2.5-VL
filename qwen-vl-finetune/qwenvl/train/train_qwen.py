@@ -114,6 +114,8 @@ def train(attn_implementation="flash_attention_2"):
             model_args.model_name_or_path,
         ).image_processor
         data_args.model_type = "qwen2.5vl"
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
     else:
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
@@ -125,6 +127,8 @@ def train(attn_implementation="flash_attention_2"):
             model_args.model_name_or_path,
         )
         data_args.model_type = "qwen2vl"
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = model.to(device)
 
     if data_args.data_flatten:
         replace_qwen2_vl_attention_class()
