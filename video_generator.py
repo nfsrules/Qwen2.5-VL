@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 class SyntheticDatasetLoader:
-    def __init__(self, output_dir="dataset", screen_size=(224, 224), video_length=60):
+    def __init__(self, output_dir="dataset", screen_size=(64, 64), video_length=30):
         base_path = Path(__file__).parent.resolve()
         self.output_dir = (base_path / output_dir).resolve()
         self.video_dir = self.output_dir / "videos"
